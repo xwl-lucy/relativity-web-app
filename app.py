@@ -54,15 +54,15 @@ COL_GRAY = "#888888"
 # 关键：Plotly 由浏览器渲染字体。这里列出常见中文字体，浏览器会自动选择可用字体。
 PLOTLY_FONT = "Microsoft YaHei, SimHei, Noto Sans CJK SC, WenQuanYi Micro Hei, Arial Unicode MS, sans-serif"
 
-# 关键：导出高清图。7200×4800 像素约等效于 6×4 英寸 1200dpi。
+# 关键：导出高清图。5400×3600 像素约等效于 6×4 英寸 900dpi。
 PLOTLY_CONFIG = {
     "displaylogo": False,
     "scrollZoom": True,
     "toImageButtonOptions": {
         "format": "png",
-        "filename": "relativity_simulation_1200dpi_equivalent",
-        "width": 7200,
-        "height": 4800,
+        "filename": "relativity_simulation_900dpi_equivalent",
+        "width": 5400,
+        "height": 3600,
         "scale": 1,
     },
 }
