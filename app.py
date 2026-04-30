@@ -24,6 +24,7 @@
 """
 
 import io
+import os
 import math
 import time
 from typing import Dict, List, Tuple
@@ -32,6 +33,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 from matplotlib.collections import LineCollection
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
@@ -47,8 +49,45 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
-plt.rcParams["axes.unicode_minus"] = False
+def setup_chinese_font() -> None:
+    """
+    设置 Matplotlib 中文字体。
+
+    本地 Windows 通常有 Microsoft YaHei 或 SimHei；
+    Streamlit Cloud 的 Linux 环境通常没有中文字体，需要在仓库中增加 packages.txt：
+        fonts-noto-cjk
+        fontconfig
+    """
+    candidate_font_files = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    ]
+
+    for font_path in candidate_font_files:
+        if os.path.exists(font_path):
+            font_manager.fontManager.addfont(font_path)
+            font_name = font_manager.FontProperties(fname=font_path).get_name()
+            plt.rcParams["font.family"] = "sans-serif"
+            plt.rcParams["font.sans-serif"] = [font_name]
+            plt.rcParams["axes.unicode_minus"] = False
+            return
+
+    # 本地 Windows / macOS 常见中文字体兜底。
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = [
+        "Microsoft YaHei",
+        "SimHei",
+        "Noto Sans CJK SC",
+        "WenQuanYi Micro Hei",
+        "Arial Unicode MS",
+        "DejaVu Sans",
+    ]
+    plt.rcParams["axes.unicode_minus"] = False
+
+
+setup_chinese_font()
 plt.rcParams["figure.dpi"] = 120
 plt.rcParams["savefig.dpi"] = 300
 
