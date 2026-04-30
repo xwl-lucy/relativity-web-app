@@ -1,47 +1,39 @@
 """
-基于 Python + Streamlit 的相对论动力学 Web 交互式仿真平台
+基于 Python + Streamlit + Plotly 的相对论动力学 Web 交互式仿真平台
 
-建议论文题目：
-    基于 Python 的相对论动力学 Web 交互式仿真平台设计与实现
+重点修正版：
+1. 网页主图全部使用 Plotly，不再使用 Matplotlib 作为主显示图，解决云端中文字体乱码问题。
+2. Plotly 图由浏览器渲染，中文在 Windows/Edge/Chrome 中通常可正常显示。
+3. 单粒子仿真提供真正的播放动画。
+4. 图右上角相机按钮可导出超高清 PNG。代码中设置为 7200×4800 像素，约等效于 6×4 英寸 1200dpi。
 
 运行方式：
-    pip install streamlit numpy pandas matplotlib
+    pip install streamlit numpy pandas plotly
     streamlit run app.py
 
-主要功能：
-1. 通过网页输入质量、电荷、电场、磁场、初始速度和时间步长等参数。
-2. 支持典型场景预设：一维电场加速、纯磁场圆周运动、复合电磁场、三维螺旋运动、经典模型失效演示。
-3. 支持相对论模型和经典力学模型。
-4. 支持经典模型与相对论模型对比。
-5. 支持参数扫描，例如不同初速度、不同电场、不同磁场、不同质量、不同电荷。
-6. 支持误差诊断：纯磁场中能量守恒、轨道半径误差等。
-7. 支持洛仑兹收缩演示。
-8. 支持 CSV 数据下载。
+requirements.txt 建议内容：
+    streamlit
+    numpy
+    pandas
+    plotly
 
 说明：
-- 默认采用无量纲单位：c=1, m=1, q=1。
-- 初学者建议保持 c=1，不要直接改成 3e8，否则时间步长、电场、磁场都需要重新缩放。
+- 默认采用无量纲单位 c=1, m=1, q=1。
+- 如果你要在论文里使用图片，不要截图；请点击 Plotly 图右上角的“相机”按钮导出高清 PNG。
 """
 
-import io
-import os
 import math
-import time
 from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
-from matplotlib import font_manager
-from matplotlib.collections import LineCollection
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
 # ============================================================
-# 1. 页面设置
+# 1. 页面与全局设置
 # ============================================================
 
 st.set_page_config(
@@ -51,60 +43,29 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-def setup_chinese_font() -> None:
-    """
-    设置 Matplotlib 中文字体。
-
-    本地 Windows 通常有 Microsoft YaHei 或 SimHei；
-    Streamlit Cloud 的 Linux 环境通常没有中文字体，需要在仓库中增加 packages.txt：
-        fonts-noto-cjk
-        fontconfig
-    """
-    candidate_font_files = [
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-    ]
-
-    for font_path in candidate_font_files:
-        if os.path.exists(font_path):
-            font_manager.fontManager.addfont(font_path)
-            font_name = font_manager.FontProperties(fname=font_path).get_name()
-            plt.rcParams["font.family"] = "sans-serif"
-            plt.rcParams["font.sans-serif"] = [font_name]
-            plt.rcParams["axes.unicode_minus"] = False
-            return
-
-    # 本地 Windows / macOS 常见中文字体兜底。
-    plt.rcParams["font.family"] = "sans-serif"
-    plt.rcParams["font.sans-serif"] = [
-        "Microsoft YaHei",
-        "SimHei",
-        "Noto Sans CJK SC",
-        "WenQuanYi Micro Hei",
-        "Arial Unicode MS",
-        "DejaVu Sans",
-    ]
-    plt.rcParams["axes.unicode_minus"] = False
-
-
-setup_chinese_font()
-# 提高 Streamlit 页面中 Matplotlib 图像的清晰度；论文下载图使用 600 dpi。
-plt.rcParams["figure.dpi"] = 160
-plt.rcParams["savefig.dpi"] = 600
-plt.rcParams["font.size"] = 11
-plt.rcParams["axes.titlesize"] = 14
-plt.rcParams["axes.labelsize"] = 12
-plt.rcParams["legend.fontsize"] = 10
-
-
 COL_REL = "#1f77b4"
 COL_CLS = "#d62728"
 COL_GREEN = "#2ca02c"
 COL_ORANGE = "#ff7f0e"
 COL_PURPLE = "#9467bd"
 COL_DARK = "#222222"
+COL_GRAY = "#888888"
+
+# 关键：Plotly 由浏览器渲染字体。这里列出常见中文字体，浏览器会自动选择可用字体。
+PLOTLY_FONT = "Microsoft YaHei, SimHei, Noto Sans CJK SC, WenQuanYi Micro Hei, Arial Unicode MS, sans-serif"
+
+# 关键：导出高清图。7200×4800 像素约等效于 6×4 英寸 1200dpi。
+PLOTLY_CONFIG = {
+    "displaylogo": False,
+    "scrollZoom": True,
+    "toImageButtonOptions": {
+        "format": "png",
+        "filename": "relativity_simulation_1200dpi_equivalent",
+        "width": 7200,
+        "height": 4800,
+        "scale": 1,
+    },
+}
 
 
 # ============================================================
@@ -113,27 +74,23 @@ COL_DARK = "#222222"
 
 
 def gamma_from_speed(speed: float, c: float) -> float:
-    """由速率计算洛仑兹因子 gamma。"""
     beta2 = (float(speed) / float(c)) ** 2
     beta2 = min(beta2, 1.0 - 1e-14)
     return 1.0 / math.sqrt(1.0 - beta2)
 
 
 def gamma_from_momentum(p: np.ndarray, m: float, c: float) -> float:
-    """由动量向量计算洛仑兹因子 gamma。"""
     p = np.asarray(p, dtype=float)
     p2 = float(np.dot(p, p))
     return math.sqrt(1.0 + p2 / (m * m * c * c))
 
 
 def velocity_from_momentum(p: np.ndarray, m: float, c: float) -> np.ndarray:
-    """由相对论动量反推出速度。"""
     gamma = gamma_from_momentum(p, m, c)
     return np.asarray(p, dtype=float) / (gamma * m)
 
 
 def relativistic_momentum_from_velocity(v: np.ndarray, m: float, c: float) -> np.ndarray:
-    """由速度计算相对论动量 p = gamma m v。"""
     v = np.asarray(v, dtype=float)
     speed = float(np.linalg.norm(v))
     gamma = gamma_from_speed(speed, c)
@@ -141,17 +98,14 @@ def relativistic_momentum_from_velocity(v: np.ndarray, m: float, c: float) -> np
 
 
 def kinetic_energy_rel(gamma: float, m: float, c: float) -> float:
-    """相对论动能 K = (gamma - 1)mc^2。"""
     return (gamma - 1.0) * m * c * c
 
 
 def kinetic_energy_cls(speed: float, m: float) -> float:
-    """经典动能 K = 1/2 mv^2。"""
     return 0.5 * m * speed * speed
 
 
 def lorentz_force(q: float, e_field: np.ndarray, v: np.ndarray, b_field: np.ndarray) -> np.ndarray:
-    """洛伦兹力 F = q(E + v × B)。"""
     return q * (np.asarray(e_field, dtype=float) + np.cross(v, b_field))
 
 
@@ -183,12 +137,7 @@ def relativistic_boris_push(
     m: float,
     c: float,
 ) -> np.ndarray:
-    """
-    相对论 Boris 推进器。
-
-    该算法适用于带电粒子在电磁场中的相对论运动。
-    对纯磁场运动，它比普通欧拉法更稳定，更适合做轨迹仿真。
-    """
+    """相对论 Boris 推进器。"""
     p = np.asarray(p, dtype=float)
     e = np.asarray(e_field, dtype=float)
     b = np.asarray(b_field, dtype=float)
@@ -207,7 +156,6 @@ def relativistic_boris_push(
 
 
 def params_to_tuple(params: Dict[str, float]) -> Tuple[Tuple[str, float], ...]:
-    """将参数字典转为可缓存的 tuple。"""
     return tuple(sorted((k, float(v)) for k, v in params.items()))
 
 
@@ -218,7 +166,6 @@ def simulate_cached(model: str, params_tuple: Tuple[Tuple[str, float], ...]) -> 
 
 
 def simulate(model: str, params: Dict[str, float]) -> Dict[str, np.ndarray]:
-    """统一仿真入口。"""
     check_params(params)
     if model == "相对论模型":
         return simulate_relativistic(params)
@@ -228,7 +175,6 @@ def simulate(model: str, params: Dict[str, float]) -> Dict[str, np.ndarray]:
 
 
 def simulate_relativistic(params: Dict[str, float]) -> Dict[str, np.ndarray]:
-    """相对论模型仿真。"""
     c = params["c"]
     m = params["m"]
     q = params["q"]
@@ -275,7 +221,6 @@ def simulate_relativistic(params: Dict[str, float]) -> Dict[str, np.ndarray]:
 
 
 def simulate_classical(params: Dict[str, float]) -> Dict[str, np.ndarray]:
-    """经典模型仿真。"""
     m = params["m"]
     q = params["q"]
     dt = params["dt"]
@@ -437,12 +382,11 @@ def sidebar_params() -> Tuple[str, str, Dict[str, float]]:
         "vx0": vx0, "vy0": vy0, "vz0": vz0,
         "dt": dt, "total_time": total_time,
     }
-
     return preset_name, model, params
 
 
 # ============================================================
-# 5. 数据与绘图工具
+# 5. 数据工具
 # ============================================================
 
 
@@ -477,177 +421,35 @@ def download_dataframe(df: pd.DataFrame, filename: str) -> None:
     )
 
 
-def fig_to_png_bytes(fig: plt.Figure, dpi: int = 600) -> bytes:
-    """把 Matplotlib 图像转换为高清 PNG 字节流，便于论文下载。"""
-    buffer = io.BytesIO()
-    fig.savefig(buffer, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
-    buffer.seek(0)
-    return buffer.getvalue()
+def downsample_indices(n: int, max_points: int = 1400) -> np.ndarray:
+    if n <= max_points:
+        return np.arange(n)
+    return np.linspace(0, n - 1, max_points).astype(int)
 
 
-def download_figure(fig: plt.Figure, filename: str, label: str = "下载高清 PNG 图像（600 dpi）") -> None:
-    st.download_button(
-        label=label,
-        data=fig_to_png_bytes(fig, dpi=600),
-        file_name=filename,
-        mime="image/png",
-    )
+# ============================================================
+# 6. Plotly 绘图函数
+# ============================================================
 
 
-def style_axis(ax, xlabel: str, ylabel: str, title: str) -> None:
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_title(title, fontweight="bold", pad=10)
-    ax.grid(True, alpha=0.25, linestyle="--")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-
-def plot_dynamic_trajectory_plotly(result: Dict[str, np.ndarray], max_frames: int = 180) -> go.Figure:
-    """生成浏览器中可播放的 Plotly 动态轨迹图。"""
-    t = result["t"]
-    r = result["r"]
-    speed = result["speed"]
-    c = result["params"]["c"]
-
-    n = len(t)
-    frame_indices = np.unique(np.linspace(0, n - 1, min(max_frames, n)).astype(int))
-
-    x_min, x_max = float(np.min(r[:, 0])), float(np.max(r[:, 0]))
-    y_min, y_max = float(np.min(r[:, 1])), float(np.max(r[:, 1]))
-    x_pad = max(0.5, 0.08 * (x_max - x_min + 1e-9))
-    y_pad = max(0.5, 0.08 * (y_max - y_min + 1e-9))
-
-    initial_idx = int(frame_indices[0])
-    fig = go.Figure(
-        data=[
-            go.Scatter(
-                x=r[:initial_idx + 1, 0],
-                y=r[:initial_idx + 1, 1],
-                mode="lines",
-                line=dict(color="#1f77b4", width=3),
-                name="运动轨迹",
-            ),
-            go.Scatter(
-                x=[r[initial_idx, 0]],
-                y=[r[initial_idx, 1]],
-                mode="markers",
-                marker=dict(color="#d62728", size=12),
-                name="粒子当前位置",
-                text=["t=%.3f<br>v/c=%.4f" % (t[initial_idx], speed[initial_idx] / c)],
-                hoverinfo="text",
-            ),
-        ]
-    )
-
-    frames = []
-    slider_steps = []
-    for k, idx in enumerate(frame_indices):
-        frame_name = str(k)
-        frames.append(
-            go.Frame(
-                name=frame_name,
-                data=[
-                    go.Scatter(
-                        x=r[:idx + 1, 0],
-                        y=r[:idx + 1, 1],
-                        mode="lines",
-                        line=dict(color="#1f77b4", width=3),
-                    ),
-                    go.Scatter(
-                        x=[r[idx, 0]],
-                        y=[r[idx, 1]],
-                        mode="markers",
-                        marker=dict(color="#d62728", size=12),
-                        text=["t=%.3f<br>v/c=%.4f" % (t[idx], speed[idx] / c)],
-                        hoverinfo="text",
-                    ),
-                ],
-            )
-        )
-        slider_steps.append(
-            dict(
-                method="animate",
-                args=[[frame_name], dict(mode="immediate", frame=dict(duration=0, redraw=True), transition=dict(duration=0))],
-                label="%.1f" % t[idx],
-            )
-        )
-
-    fig.frames = frames
+def common_layout(fig: go.Figure, title: str, height: int = 850) -> go.Figure:
     fig.update_layout(
-        title="动态轨迹播放：x-y 平面运动",
-        height=650,
-        font=dict(family="Noto Sans CJK SC, Microsoft YaHei, SimHei, Arial Unicode MS, sans-serif", size=14),
-        xaxis=dict(title="x", range=[x_min - x_pad, x_max + x_pad], zeroline=False),
-        yaxis=dict(title="y", range=[y_min - y_pad, y_max + y_pad], scaleanchor="x", scaleratio=1, zeroline=False),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        updatemenus=[
-            dict(
-                type="buttons",
-                showactive=False,
-                x=0.02,
-                y=-0.12,
-                xanchor="left",
-                yanchor="top",
-                buttons=[
-                    dict(
-                        label="▶ 播放",
-                        method="animate",
-                        args=[None, dict(frame=dict(duration=35, redraw=True), transition=dict(duration=0), fromcurrent=True)],
-                    ),
-                    dict(
-                        label="⏸ 暂停",
-                        method="animate",
-                        args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate", transition=dict(duration=0))],
-                    ),
-                ],
-            )
-        ],
-        sliders=[
-            dict(
-                active=0,
-                currentvalue=dict(prefix="时间 t = "),
-                pad=dict(t=55),
-                steps=slider_steps,
-            )
-        ],
-        margin=dict(l=20, r=20, t=70, b=90),
+        title=title,
+        height=height,
+        font=dict(family=PLOTLY_FONT, size=15),
+        hovermode="closest",
+        legend=dict(orientation="h", yanchor="bottom", y=1.03, xanchor="right", x=1),
+        margin=dict(l=35, r=35, t=90, b=45),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
     )
+    fig.update_xaxes(showgrid=True, gridcolor="#e9ecef", zeroline=False)
+    fig.update_yaxes(showgrid=True, gridcolor="#e9ecef", zeroline=False)
     return fig
 
 
-def plot_interactive_time_curves_plotly(result: Dict[str, np.ndarray]) -> go.Figure:
-    """生成浏览器中高清可缩放的速度、γ、动能交互曲线。"""
-    t = result["t"]
-    c = result["params"]["c"]
-    fig = make_subplots(
-        rows=3,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.08,
-        subplot_titles=("速度 v/c 随时间变化", "洛仑兹因子 γ 随时间变化", "动能 K 随时间变化"),
-    )
-    fig.add_trace(go.Scatter(x=t, y=result["speed"] / c, mode="lines", name="速度 v/c", line=dict(color="#1f77b4", width=3)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=t, y=np.ones_like(t), mode="lines", name="光速 c", line=dict(color="#222222", width=2, dash="dot")), row=1, col=1)
-    fig.add_trace(go.Scatter(x=t, y=result["gamma"], mode="lines", name="γ", line=dict(color="#9467bd", width=3)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=t, y=result["kinetic"], mode="lines", name="动能 K", line=dict(color="#2ca02c", width=3)), row=3, col=1)
-
-    fig.update_xaxes(title_text="时间 t", row=3, col=1)
-    fig.update_yaxes(title_text="v/c", row=1, col=1)
-    fig.update_yaxes(title_text="γ", row=2, col=1)
-    fig.update_yaxes(title_text="K", row=3, col=1)
-    fig.update_layout(
-        height=820,
-        title="物理量交互曲线：可拖动、缩放、查看数据点",
-        font=dict(family="Noto Sans CJK SC, Microsoft YaHei, SimHei, Arial Unicode MS, sans-serif", size=14),
-        hovermode="x unified",
-        margin=dict(l=20, r=20, t=90, b=40),
-    )
-    return fig
-
-
-def plot_result_dashboard(result: Dict[str, np.ndarray], frame_ratio: float = 1.0, show_arrows: bool = True) -> plt.Figure:
-    """单模型仿真仪表盘。"""
+def plot_static_dashboard(result: Dict[str, np.ndarray], frame_ratio: float = 1.0, show_arrows: bool = True) -> go.Figure:
+    """单粒子仿真静态交互图。"""
     t = result["t"]
     r = result["r"]
     v = result["v"]
@@ -656,90 +458,179 @@ def plot_result_dashboard(result: Dict[str, np.ndarray], frame_ratio: float = 1.
     gamma = result["gamma"]
     kinetic = result["kinetic"]
     c = result["params"]["c"]
-
     n = len(t)
     idx = max(1, min(n - 1, int(frame_ratio * (n - 1))))
 
-    fig, axes = plt.subplots(2, 2, figsize=(12.6, 8.2))
-    ax1, ax2, ax3, ax4 = axes.ravel()
+    fig = make_subplots(
+        rows=2,
+        cols=2,
+        subplot_titles=("x-y 平面轨迹", "速度随时间变化", "洛仑兹因子变化", "动能随时间变化"),
+        horizontal_spacing=0.10,
+        vertical_spacing=0.15,
+    )
 
-    ax1.plot(r[:idx + 1, 0], r[:idx + 1, 1], color=COL_REL, linewidth=2.2, label="轨迹")
-    ax1.scatter(r[idx, 0], r[idx, 1], color=COL_CLS, s=45, label="当前位置")
+    fig.add_trace(go.Scatter(x=r[:idx + 1, 0], y=r[:idx + 1, 1], mode="lines", name="轨迹", line=dict(color=COL_REL, width=3)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=[r[idx, 0]], y=[r[idx, 1]], mode="markers", name="当前位置", marker=dict(color=COL_CLS, size=12)), row=1, col=1)
+
     if show_arrows:
         vxy = v[idx, :2]
         fxy = force[idx, :2]
         v_norm = np.linalg.norm(vxy)
         f_norm = np.linalg.norm(fxy)
         if v_norm > 1e-12:
-            ax1.arrow(r[idx, 0], r[idx, 1], vxy[0] / v_norm * 0.25, vxy[1] / v_norm * 0.25,
-                      color=COL_REL, width=0.01, length_includes_head=True)
+            fig.add_annotation(x=r[idx, 0] + vxy[0] / v_norm * 0.28, y=r[idx, 1] + vxy[1] / v_norm * 0.28,
+                               ax=r[idx, 0], ay=r[idx, 1], xref="x", yref="y", axref="x", ayref="y",
+                               showarrow=True, arrowhead=3, arrowwidth=3, arrowcolor=COL_REL, text="v")
         if f_norm > 1e-12:
-            ax1.arrow(r[idx, 0], r[idx, 1], fxy[0] / f_norm * 0.25, fxy[1] / f_norm * 0.25,
-                      color=COL_CLS, width=0.01, length_includes_head=True)
-    ax1.set_aspect("equal", adjustable="box")
-    style_axis(ax1, "x", "y", "x-y 平面轨迹")
-    ax1.legend(loc="best")
+            fig.add_annotation(x=r[idx, 0] + fxy[0] / f_norm * 0.28, y=r[idx, 1] + fxy[1] / f_norm * 0.28,
+                               ax=r[idx, 0], ay=r[idx, 1], xref="x", yref="y", axref="x", ayref="y",
+                               showarrow=True, arrowhead=3, arrowwidth=3, arrowcolor=COL_CLS, text="F")
 
-    ax2.plot(t[:idx + 1], speed[:idx + 1] / c, color=COL_REL, linewidth=2.0)
-    ax2.axhline(1.0, color=COL_DARK, linestyle=":", label="光速 c")
-    ax2.set_xlim(t[0], t[-1])
-    ax2.set_ylim(0, max(1.05, np.max(speed / c) * 1.1))
-    style_axis(ax2, "时间 t", "速度 v/c", "速度随时间变化")
-    ax2.legend(loc="best")
+    fig.add_trace(go.Scatter(x=t[:idx + 1], y=speed[:idx + 1] / c, mode="lines", name="速度 v/c", line=dict(color=COL_REL, width=3)), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t, y=np.ones_like(t), mode="lines", name="光速 c", line=dict(color=COL_DARK, width=2, dash="dot")), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t[:idx + 1], y=gamma[:idx + 1], mode="lines", name="γ", line=dict(color=COL_PURPLE, width=3)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=t[:idx + 1], y=kinetic[:idx + 1], mode="lines", name="动能 K", line=dict(color=COL_GREEN, width=3)), row=2, col=2)
 
-    ax3.plot(t[:idx + 1], gamma[:idx + 1], color=COL_PURPLE, linewidth=2.0)
-    ax3.set_xlim(t[0], t[-1])
-    ax3.set_ylim(0, max(1.2, np.max(gamma) * 1.1))
-    style_axis(ax3, "时间 t", "γ", "洛仑兹因子变化")
+    fig.update_xaxes(title_text="x", row=1, col=1)
+    fig.update_yaxes(title_text="y", row=1, col=1, scaleanchor="x", scaleratio=1)
+    fig.update_xaxes(title_text="时间 t", row=1, col=2)
+    fig.update_yaxes(title_text="速度 v/c", row=1, col=2)
+    fig.update_xaxes(title_text="时间 t", row=2, col=1)
+    fig.update_yaxes(title_text="γ", row=2, col=1)
+    fig.update_xaxes(title_text="时间 t", row=2, col=2)
+    fig.update_yaxes(title_text="动能 K", row=2, col=2)
 
-    ax4.plot(t[:idx + 1], kinetic[:idx + 1], color=COL_GREEN, linewidth=2.0)
-    ax4.set_xlim(t[0], t[-1])
-    ax4.set_ylim(0, max(0.1, np.max(kinetic) * 1.1))
-    style_axis(ax4, "时间 t", "动能 K", "动能随时间变化")
-
-    fig.suptitle("%s：粒子运动仿真结果" % result["model"], fontsize=15, fontweight="bold")
-    fig.tight_layout()
-    return fig
+    return common_layout(fig, "%s：粒子运动仿真结果" % result["model"])
 
 
-def plot_compare(rel: Dict[str, np.ndarray], cls: Dict[str, np.ndarray]) -> plt.Figure:
-    """经典模型与相对论模型对比图。"""
+def plot_animation_dashboard(result: Dict[str, np.ndarray], frame_count: int = 90) -> go.Figure:
+    """单粒子仿真动画图。"""
+    t = result["t"]
+    r = result["r"]
+    speed = result["speed"]
+    gamma = result["gamma"]
+    kinetic = result["kinetic"]
+    c = result["params"]["c"]
+    n = len(t)
+    frame_indices = np.linspace(1, n - 1, min(frame_count, n - 1)).astype(int)
+
+    fig = make_subplots(
+        rows=2,
+        cols=2,
+        subplot_titles=("x-y 平面轨迹", "速度随时间变化", "洛仑兹因子变化", "动能随时间变化"),
+        horizontal_spacing=0.10,
+        vertical_spacing=0.15,
+    )
+
+    # 静态全轨迹背景
+    fig.add_trace(go.Scatter(x=r[:, 0], y=r[:, 1], mode="lines", name="完整轨迹", line=dict(color="#c9d6e8", width=2)), row=1, col=1)
+    # 动态轨迹、当前位置、速度、gamma、动能
+    start = frame_indices[0]
+    fig.add_trace(go.Scatter(x=r[:start + 1, 0], y=r[:start + 1, 1], mode="lines", name="已运动轨迹", line=dict(color=COL_REL, width=4)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=[r[start, 0]], y=[r[start, 1]], mode="markers", name="粒子", marker=dict(color=COL_CLS, size=13)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=t[:start + 1], y=speed[:start + 1] / c, mode="lines", name="速度 v/c", line=dict(color=COL_REL, width=3)), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t, y=np.ones_like(t), mode="lines", name="光速 c", line=dict(color=COL_DARK, width=2, dash="dot")), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t[:start + 1], y=gamma[:start + 1], mode="lines", name="γ", line=dict(color=COL_PURPLE, width=3)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=t[:start + 1], y=kinetic[:start + 1], mode="lines", name="动能 K", line=dict(color=COL_GREEN, width=3)), row=2, col=2)
+
+    frames = []
+    for k in frame_indices:
+        frames.append(
+            go.Frame(
+                data=[
+                    go.Scatter(x=r[:k + 1, 0], y=r[:k + 1, 1]),
+                    go.Scatter(x=[r[k, 0]], y=[r[k, 1]]),
+                    go.Scatter(x=t[:k + 1], y=speed[:k + 1] / c),
+                    go.Scatter(x=t[:k + 1], y=gamma[:k + 1]),
+                    go.Scatter(x=t[:k + 1], y=kinetic[:k + 1]),
+                ],
+                traces=[1, 2, 3, 5, 6],
+                name=str(k),
+            )
+        )
+    fig.frames = frames
+
+    fig.update_layout(
+        updatemenus=[
+            {
+                "type": "buttons",
+                "showactive": False,
+                "x": 0.08,
+                "y": -0.08,
+                "buttons": [
+                    {"label": "▶ 播放", "method": "animate", "args": [None, {"frame": {"duration": 45, "redraw": True}, "fromcurrent": True}]},
+                    {"label": "⏸ 暂停", "method": "animate", "args": [[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}]},
+                ],
+            }
+        ],
+        sliders=[
+            {
+                "active": 0,
+                "x": 0.25,
+                "y": -0.08,
+                "len": 0.70,
+                "currentvalue": {"prefix": "帧："},
+                "steps": [
+                    {"label": str(i), "method": "animate", "args": [[str(k)], {"mode": "immediate", "frame": {"duration": 0, "redraw": True}}]}
+                    for i, k in enumerate(frame_indices)
+                ],
+            }
+        ],
+    )
+
+    fig.update_xaxes(title_text="x", row=1, col=1)
+    fig.update_yaxes(title_text="y", row=1, col=1, scaleanchor="x", scaleratio=1)
+    fig.update_xaxes(title_text="时间 t", row=1, col=2)
+    fig.update_yaxes(title_text="速度 v/c", row=1, col=2, range=[0, max(1.05, np.max(speed / c) * 1.10)])
+    fig.update_xaxes(title_text="时间 t", row=2, col=1)
+    fig.update_yaxes(title_text="γ", row=2, col=1, range=[0, max(1.2, np.max(gamma) * 1.10)])
+    fig.update_xaxes(title_text="时间 t", row=2, col=2)
+    fig.update_yaxes(title_text="动能 K", row=2, col=2, range=[0, max(0.1, np.max(kinetic) * 1.10)])
+
+    return common_layout(fig, "%s：粒子运动动态仿真" % result["model"], height=900)
+
+
+def plot_compare(rel: Dict[str, np.ndarray], cls: Dict[str, np.ndarray]) -> go.Figure:
     c = rel["params"]["c"]
-    fig, axes = plt.subplots(2, 2, figsize=(12.6, 8.2))
-    ax1, ax2, ax3, ax4 = axes.ravel()
-
-    ax1.plot(rel["r"][:, 0], rel["r"][:, 1], color=COL_REL, label="相对论模型")
-    ax1.plot(cls["r"][:, 0], cls["r"][:, 1], "--", color=COL_CLS, label="经典模型")
-    ax1.set_aspect("equal", adjustable="box")
-    style_axis(ax1, "x", "y", "轨迹对比")
-    ax1.legend(loc="best")
-
-    ax2.plot(rel["t"], rel["speed"] / c, color=COL_REL, label="相对论模型")
-    ax2.plot(cls["t"], cls["speed"] / c, "--", color=COL_CLS, label="经典模型")
-    ax2.axhline(1.0, color=COL_DARK, linestyle=":", label="光速 c")
-    style_axis(ax2, "时间 t", "速度 v/c", "速度对比")
-    ax2.legend(loc="best")
-
-    ax3.plot(rel["t"], rel["kinetic"], color=COL_REL, label="相对论动能")
-    ax3.plot(cls["t"], cls["kinetic"], "--", color=COL_CLS, label="经典动能")
-    style_axis(ax3, "时间 t", "动能 K", "动能对比")
-    ax3.legend(loc="best")
-
     n = min(len(rel["t"]), len(cls["t"]))
     diff = np.linalg.norm(rel["r"][:n] - cls["r"][:n], axis=1)
-    ax4.plot(rel["t"][:n], diff, color=COL_ORANGE)
-    style_axis(ax4, "时间 t", "位置差 |r_rel-r_cls|", "两种模型的位置差异")
 
-    fig.suptitle("经典力学模型与相对论动力学模型对比", fontsize=15, fontweight="bold")
-    fig.tight_layout()
-    return fig
+    fig = make_subplots(
+        rows=2,
+        cols=2,
+        subplot_titles=("轨迹对比", "速度对比", "动能对比", "两种模型的位置差异"),
+        horizontal_spacing=0.10,
+        vertical_spacing=0.15,
+    )
+    fig.add_trace(go.Scatter(x=rel["r"][:, 0], y=rel["r"][:, 1], mode="lines", name="相对论轨迹", line=dict(color=COL_REL, width=3)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=cls["r"][:, 0], y=cls["r"][:, 1], mode="lines", name="经典轨迹", line=dict(color=COL_CLS, width=3, dash="dash")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=rel["t"], y=rel["speed"] / c, mode="lines", name="相对论速度", line=dict(color=COL_REL, width=3)), row=1, col=2)
+    fig.add_trace(go.Scatter(x=cls["t"], y=cls["speed"] / c, mode="lines", name="经典速度", line=dict(color=COL_CLS, width=3, dash="dash")), row=1, col=2)
+    fig.add_trace(go.Scatter(x=rel["t"], y=np.ones_like(rel["t"]), mode="lines", name="光速 c", line=dict(color=COL_DARK, width=2, dash="dot")), row=1, col=2)
+    fig.add_trace(go.Scatter(x=rel["t"], y=rel["kinetic"], mode="lines", name="相对论动能", line=dict(color=COL_REL, width=3)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=cls["t"], y=cls["kinetic"], mode="lines", name="经典动能", line=dict(color=COL_CLS, width=3, dash="dash")), row=2, col=1)
+    fig.add_trace(go.Scatter(x=rel["t"][:n], y=diff, mode="lines", name="位置差", line=dict(color=COL_ORANGE, width=3)), row=2, col=2)
+
+    fig.update_xaxes(title_text="x", row=1, col=1)
+    fig.update_yaxes(title_text="y", row=1, col=1, scaleanchor="x", scaleratio=1)
+    fig.update_xaxes(title_text="时间 t", row=1, col=2)
+    fig.update_yaxes(title_text="速度 v/c", row=1, col=2)
+    fig.update_xaxes(title_text="时间 t", row=2, col=1)
+    fig.update_yaxes(title_text="动能 K", row=2, col=1)
+    fig.update_xaxes(title_text="时间 t", row=2, col=2)
+    fig.update_yaxes(title_text="位置差", row=2, col=2)
+
+    return common_layout(fig, "经典力学模型与相对论动力学模型对比")
 
 
-def plot_scan(results: List[Dict[str, np.ndarray]], scan_name: str, c: float) -> plt.Figure:
-    """参数扫描结果图。"""
-    fig, axes = plt.subplots(2, 2, figsize=(12.6, 8.2))
-    ax1, ax2, ax3, ax4 = axes.ravel()
-
+def plot_scan(results: List[Dict[str, np.ndarray]], scan_name: str, c: float) -> go.Figure:
+    fig = make_subplots(
+        rows=2,
+        cols=2,
+        subplot_titles=("不同参数下的轨迹对比", "不同参数下的速度对比", "参数对最大速度的影响", "参数对 γ 和动能的影响"),
+        horizontal_spacing=0.10,
+        vertical_spacing=0.15,
+    )
     scan_values = []
     max_speed = []
     max_gamma = []
@@ -748,33 +639,27 @@ def plot_scan(results: List[Dict[str, np.ndarray]], scan_name: str, c: float) ->
     for result in results:
         label = result["label"]
         scan_values.append(result["scan_value"])
-        max_speed.append(np.max(result["speed"]) / c)
-        max_gamma.append(np.max(result["gamma"]))
-        final_energy.append(result["kinetic"][-1])
+        max_speed.append(float(np.max(result["speed"]) / c))
+        max_gamma.append(float(np.max(result["gamma"])))
+        final_energy.append(float(result["kinetic"][-1]))
+        fig.add_trace(go.Scatter(x=result["r"][:, 0], y=result["r"][:, 1], mode="lines", name=label, line=dict(width=3)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=result["t"], y=result["speed"] / c, mode="lines", name=label, showlegend=False, line=dict(width=3)), row=1, col=2)
 
-        ax1.plot(result["r"][:, 0], result["r"][:, 1], label=label, linewidth=2.0)
-        ax2.plot(result["t"], result["speed"] / c, label=label, linewidth=2.0)
+    fig.add_trace(go.Scatter(x=results[0]["t"], y=np.ones_like(results[0]["t"]), mode="lines", name="光速 c", line=dict(color=COL_DARK, width=2, dash="dot")), row=1, col=2)
+    fig.add_trace(go.Scatter(x=scan_values, y=max_speed, mode="lines+markers", name="最大速度/c", line=dict(color=COL_REL, width=3)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=scan_values, y=max_gamma, mode="lines+markers", name="最大 γ", line=dict(color=COL_PURPLE, width=3)), row=2, col=2)
+    fig.add_trace(go.Scatter(x=scan_values, y=final_energy, mode="lines+markers", name="末态动能", line=dict(color=COL_GREEN, width=3)), row=2, col=2)
 
-    ax1.set_aspect("equal", adjustable="box")
-    style_axis(ax1, "x", "y", "不同参数下的轨迹对比")
-    ax1.legend(loc="best")
+    fig.update_xaxes(title_text="x", row=1, col=1)
+    fig.update_yaxes(title_text="y", row=1, col=1, scaleanchor="x", scaleratio=1)
+    fig.update_xaxes(title_text="时间 t", row=1, col=2)
+    fig.update_yaxes(title_text="速度 v/c", row=1, col=2)
+    fig.update_xaxes(title_text=scan_name, row=2, col=1)
+    fig.update_yaxes(title_text="最大速度/c", row=2, col=1)
+    fig.update_xaxes(title_text=scan_name, row=2, col=2)
+    fig.update_yaxes(title_text="数值", row=2, col=2)
 
-    ax2.axhline(1.0, color=COL_DARK, linestyle=":", label="光速 c")
-    style_axis(ax2, "时间 t", "速度 v/c", "不同参数下的速度对比")
-    ax2.legend(loc="best")
-
-    ax3.plot(scan_values, max_speed, marker="o", color=COL_REL)
-    style_axis(ax3, scan_name, "最大速度 / c", "参数对最大速度的影响")
-    ax3.set_ylim(0, max(1.05, max(max_speed) * 1.1))
-
-    ax4.plot(scan_values, max_gamma, marker="o", color=COL_PURPLE, label="最大 γ")
-    ax4.plot(scan_values, final_energy, marker="s", color=COL_GREEN, label="末态动能")
-    style_axis(ax4, scan_name, "数值", "参数对 γ 和动能的影响")
-    ax4.legend(loc="best")
-
-    fig.suptitle("参数扫描：%s" % scan_name, fontsize=15, fontweight="bold")
-    fig.tight_layout()
-    return fig
+    return common_layout(fig, "参数扫描：%s" % scan_name)
 
 
 def estimate_radius_xy(result: Dict[str, np.ndarray]) -> float:
@@ -796,126 +681,104 @@ def theoretical_radius_rel(params: Dict[str, float]) -> float:
     return gamma * params["m"] * speed / (abs(params["q"]) * b_abs)
 
 
-def plot_diagnostics(result: Dict[str, np.ndarray]) -> Tuple[plt.Figure, pd.DataFrame]:
+def plot_diagnostics(result: Dict[str, np.ndarray]) -> Tuple[go.Figure, pd.DataFrame]:
     params = result["params"]
     t = result["t"]
     k = result["kinetic"]
     k0 = max(abs(k[0]), 1e-12)
     energy_error = np.abs(k - k[0]) / k0
-    max_speed_c = np.max(result["speed"]) / params["c"]
-    max_gamma = np.max(result["gamma"])
-    max_energy_error = np.max(energy_error)
+    max_speed_c = float(np.max(result["speed"]) / params["c"])
+    max_gamma = float(np.max(result["gamma"]))
+    max_energy_error = float(np.max(energy_error))
     r_num = estimate_radius_xy(result)
     r_theory = theoretical_radius_rel(params)
-    if math.isnan(r_theory):
-        radius_error = float("nan")
-    else:
-        radius_error = abs(r_num - r_theory) / max(abs(r_theory), 1e-12)
-
-    fig, axes = plt.subplots(2, 2, figsize=(12.6, 8.2))
-    ax1, ax2, ax3, ax4 = axes.ravel()
-
-    ax1.plot(t, k, color=COL_GREEN)
-    style_axis(ax1, "时间 t", "动能 K", "动能变化")
-
-    ax2.plot(t, energy_error, color=COL_ORANGE)
-    style_axis(ax2, "时间 t", "相对变化", "动能相对变化 / 数值误差")
-
-    labels = ["最大速度/c", "最大γ", "最大动能变化"]
-    values = [max_speed_c, max_gamma, max_energy_error]
-    ax3.bar(labels, values, color=[COL_REL, COL_PURPLE, COL_ORANGE])
-    style_axis(ax3, "指标", "数值", "仿真诊断指标")
-    for i, value in enumerate(values):
-        ax3.text(i, value, "%.3g" % value, ha="center", va="bottom")
-
-    ax4.axis("off")
-    text = (
-        "诊断说明\n\n"
-        "最大速度/c：%.6g\n"
-        "最大洛仑兹因子 γ：%.6g\n"
-        "最大动能相对变化：%.6e\n"
-        "数值轨道半径：%.6g\n"
-        "理论轨道半径：%s\n"
-        "轨道半径相对误差：%s\n\n"
-        "纯磁场中磁场不做功，动能应近似守恒。\n"
-        "若存在电场，动能变化属于正常现象。"
-    ) % (
-        max_speed_c,
-        max_gamma,
-        max_energy_error,
-        r_num,
-        "不适用" if math.isnan(r_theory) else "%.6g" % r_theory,
-        "不适用" if math.isnan(radius_error) else "%.6e" % radius_error,
-    )
-    ax4.text(0.02, 0.98, text, va="top", fontsize=10,
-             bbox=dict(boxstyle="round,pad=0.5", facecolor="#f8f9fa", edgecolor="#bbbbbb"))
-
-    fig.suptitle("数值仿真误差与物理诊断", fontsize=15, fontweight="bold")
-    fig.tight_layout()
+    radius_error = float("nan") if math.isnan(r_theory) else abs(r_num - r_theory) / max(abs(r_theory), 1e-12)
 
     table = pd.DataFrame({
         "指标": ["最大速度/c", "最大γ", "最大动能相对变化", "数值轨道半径", "理论轨道半径", "轨道半径相对误差"],
         "数值": [max_speed_c, max_gamma, max_energy_error, r_num, r_theory, radius_error],
     })
-    return fig, table
+    table_display = table.copy()
+    table_display["数值"] = table_display["数值"].apply(lambda x: "不适用" if pd.isna(x) else "%.6g" % x)
+
+    fig = make_subplots(
+        rows=2,
+        cols=2,
+        specs=[[{}, {}], [{}, {"type": "table"}]],
+        subplot_titles=("动能变化", "动能相对变化 / 数值误差", "仿真诊断指标", "诊断结果表"),
+        horizontal_spacing=0.10,
+        vertical_spacing=0.15,
+    )
+    fig.add_trace(go.Scatter(x=t, y=k, mode="lines", name="动能 K", line=dict(color=COL_GREEN, width=3)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=t, y=energy_error, mode="lines", name="动能相对变化", line=dict(color=COL_ORANGE, width=3)), row=1, col=2)
+    fig.add_trace(go.Bar(x=["最大速度/c", "最大γ", "最大动能变化"], y=[max_speed_c, max_gamma, max_energy_error], name="诊断指标", marker_color=[COL_REL, COL_PURPLE, COL_ORANGE]), row=2, col=1)
+    fig.add_trace(
+        go.Table(
+            header=dict(values=list(table_display.columns), fill_color="#f0f2f6", align="center", font=dict(size=15)),
+            cells=dict(values=[table_display["指标"], table_display["数值"]], align="center", font=dict(size=14)),
+        ),
+        row=2,
+        col=2,
+    )
+    fig.update_xaxes(title_text="时间 t", row=1, col=1)
+    fig.update_yaxes(title_text="动能 K", row=1, col=1)
+    fig.update_xaxes(title_text="时间 t", row=1, col=2)
+    fig.update_yaxes(title_text="相对变化", row=1, col=2)
+    fig.update_yaxes(title_text="数值", row=2, col=1)
+
+    return common_layout(fig, "数值仿真误差与物理诊断"), table
 
 
-def plot_3d_trajectory(result: Dict[str, np.ndarray]) -> plt.Figure:
+def plot_3d_trajectory(result: Dict[str, np.ndarray]) -> go.Figure:
     r = result["r"]
-    speed = result["speed"]
-    c = result["params"]["c"]
-
-    fig = plt.figure(figsize=(10.8, 7.6))
-    ax = fig.add_subplot(111, projection="3d")
-
-    n = len(r)
-    segments = 120
-    step = max(1, n // segments)
-    cmap = plt.get_cmap("viridis")
-    vmax = max(np.max(speed / c), 1e-12)
-    for i in range(0, n - step, step):
-        color = cmap((speed[i] / c) / vmax)
-        ax.plot(r[i:i + step + 1, 0], r[i:i + step + 1, 1], r[i:i + step + 1, 2], color=color, linewidth=2.0)
-
-    ax.scatter(r[0, 0], r[0, 1], r[0, 2], color=COL_GREEN, s=60, label="起点")
-    ax.scatter(r[-1, 0], r[-1, 1], r[-1, 2], color=COL_CLS, s=60, label="终点")
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_zlabel("z")
-    ax.set_title("三维粒子轨迹", fontweight="bold")
-    ax.legend(loc="best")
-    fig.tight_layout()
+    speed_c = result["speed"] / result["params"]["c"]
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter3d(
+            x=r[:, 0], y=r[:, 1], z=r[:, 2], mode="lines",
+            line=dict(color=speed_c, colorscale="Viridis", width=6, colorbar=dict(title="速度 v/c")),
+            name="三维轨迹",
+        )
+    )
+    fig.add_trace(go.Scatter3d(x=[r[0, 0]], y=[r[0, 1]], z=[r[0, 2]], mode="markers", marker=dict(size=6, color=COL_GREEN), name="起点"))
+    fig.add_trace(go.Scatter3d(x=[r[-1, 0]], y=[r[-1, 1]], z=[r[-1, 2]], mode="markers", marker=dict(size=6, color=COL_CLS), name="终点"))
+    fig.update_layout(
+        title="三维粒子轨迹：可旋转、缩放和查看速度颜色",
+        height=820,
+        font=dict(family=PLOTLY_FONT, size=15),
+        scene=dict(xaxis_title="x", yaxis_title="y", zaxis_title="z", aspectmode="data"),
+        margin=dict(l=0, r=0, t=70, b=0),
+        paper_bgcolor="white",
+    )
     return fig
 
 
-def plot_lorentz_contraction(beta: float) -> plt.Figure:
+def plot_lorentz_contraction(beta: float) -> go.Figure:
     beta = max(0.0, min(0.999999, beta))
     gamma = gamma_from_speed(beta, 1.0)
     length = 1.0 / gamma
-
-    fig, ax = plt.subplots(figsize=(10.8, 5.6))
-    ax.set_xlim(-0.15, 1.2)
-    ax.set_ylim(-0.15, 1.15)
-    ax.axis("off")
-    ax.set_title("洛仑兹收缩演示：运动方向长度变短", fontsize=15, fontweight="bold")
-
-    ax.add_patch(plt.Rectangle((0.1, 0.72), 1.0, 0.12, color=COL_REL, alpha=0.75))
-    ax.text(0.1, 0.90, "静止长度 L0 = 1", fontsize=12)
-
-    ax.add_patch(plt.Rectangle((0.1, 0.36), length, 0.12, color=COL_ORANGE, alpha=0.85))
-    ax.text(0.1, 0.54, "运动长度 L = L0/γ = %.3f" % length, fontsize=12)
-    ax.arrow(0.1 + length + 0.03, 0.42, 0.15, 0, width=0.01, color=COL_CLS, length_includes_head=True)
-    ax.text(0.1 + length + 0.20, 0.39, "运动方向", fontsize=11)
-
-    explanation = "v/c = %.3f    γ = %.3f    L/L0 = %.3f" % (beta, gamma, length)
-    ax.text(0.1, 0.12, explanation, fontsize=14, fontweight="bold",
-            bbox=dict(boxstyle="round,pad=0.45", facecolor="#f8f9fa", edgecolor="#bbbbbb"))
-    fig.tight_layout()
+    fig = go.Figure()
+    fig.add_shape(type="rect", x0=0.1, y0=0.72, x1=1.1, y1=0.84, fillcolor=COL_REL, opacity=0.75, line=dict(width=0))
+    fig.add_shape(type="rect", x0=0.1, y0=0.36, x1=0.1 + length, y1=0.48, fillcolor=COL_ORANGE, opacity=0.85, line=dict(width=0))
+    fig.add_annotation(x=0.1, y=0.93, text="静止长度 L0 = 1", showarrow=False, xanchor="left", font=dict(size=18))
+    fig.add_annotation(x=0.1, y=0.57, text="运动长度 L = L0/γ = %.3f" % length, showarrow=False, xanchor="left", font=dict(size=18))
+    fig.add_annotation(x=0.1 + length + 0.18, y=0.42, text="运动方向", showarrow=True, ax=-55, ay=0, font=dict(size=16), arrowcolor=COL_CLS)
+    fig.add_annotation(x=0.1, y=0.16, text="v/c = %.3f    γ = %.3f    L/L0 = %.3f" % (beta, gamma, length), showarrow=False, xanchor="left", font=dict(size=20), bgcolor="#f8f9fa", bordercolor="#bbbbbb", borderpad=8)
+    fig.update_xaxes(range=[-0.05, 1.25], visible=False)
+    fig.update_yaxes(range=[0.0, 1.1], visible=False)
+    fig.update_layout(
+        title="洛仑兹收缩演示：运动方向长度变短",
+        height=540,
+        font=dict(family=PLOTLY_FONT, size=15),
+        margin=dict(l=20, r=20, t=70, b=20),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
     return fig
 
 
 # ============================================================
-# 6. 页面功能
+# 7. 页面功能
 # ============================================================
 
 
@@ -925,32 +788,18 @@ def page_home() -> None:
         """
         本平台用于演示带电粒子在电场、磁场和复合电磁场中的运动规律，支持相对论动力学模型和经典力学模型。
 
-        **推荐使用流程：**
+        **使用流程：**
         1. 在左侧选择一个场景预设；
         2. 根据需要修改质量、电荷、电场、磁场、初始速度和时间步长；
         3. 进入“单粒子仿真”“模型对比”“参数扫描”等页面运行分析；
-        4. 下载 CSV 数据或保存图像用于论文。
+        4. 下载 CSV 数据或点击图右上角相机按钮导出高清图片。
         """
     )
-
     col1, col2, col3 = st.columns(3)
     col1.metric("核心方程", "dp/dt = F")
     col2.metric("相对论动量", "p = γmv")
     col3.metric("洛仑兹因子", "γ = 1/sqrt(1-v²/c²)")
-
-    st.info("左侧参数区默认采用无量纲单位 c=1, m=1, q=1。该处理便于观察相对论效应，也避免真实 SI 单位下数值过大。")
-
-    st.subheader("平台功能")
-    st.markdown(
-        """
-        - **单粒子仿真：** 显示轨迹、速度、洛仑兹因子和动能变化。
-        - **模型对比：** 同一组参数下对比经典模型与相对论模型。
-        - **参数扫描：** 批量改变某个参数，观察轨迹和物理量变化。
-        - **误差诊断：** 检查纯磁场中动能守恒和轨道半径误差。
-        - **三维轨迹：** 显示三维空间中的粒子轨迹，适合观察螺旋运动。
-        - **洛仑兹收缩：** 通过滑块直观观察长度收缩效应。
-        """
-    )
+    st.info("网页主图使用 Plotly 浏览器渲染。若要导出论文图片，请使用图右上角相机按钮，不要直接截图。")
 
 
 def page_single_simulation(model: str, params: Dict[str, float]) -> None:
@@ -963,30 +812,17 @@ def page_single_simulation(model: str, params: Dict[str, float]) -> None:
         st.error(str(exc))
         return
 
-    display_mode = st.radio(
-        "显示模式",
-        ["交互动画（浏览器播放，推荐）", "高清静态图（适合论文下载）"],
-        horizontal=True,
-    )
-
-    if display_mode == "交互动画（浏览器播放，推荐）":
-        st.info("点击动态图下方的 ▶ 播放按钮即可看到粒子运动过程；右上角工具栏可以放大、平移和保存图片。")
-        fig_anim = plot_dynamic_trajectory_plotly(result)
-        st.plotly_chart(fig_anim, use_container_width=True, config={"displaylogo": False, "scrollZoom": True})
-
-        fig_curves = plot_interactive_time_curves_plotly(result)
-        st.plotly_chart(fig_curves, use_container_width=True, config={"displaylogo": False, "scrollZoom": True})
-
-        with st.expander("生成论文用高清静态图"):
-            fig_static = plot_result_dashboard(result, frame_ratio=1.0, show_arrows=True)
-            st.pyplot(fig_static, use_container_width=True)
-            download_figure(fig_static, "single_simulation_600dpi.png")
+    display_mode = st.radio("显示方式", ["动态播放", "静态交互图"], horizontal=True)
+    if display_mode == "动态播放":
+        frame_count = st.slider("动画帧数", 30, 180, 90, 10)
+        fig = plot_animation_dashboard(result, frame_count=frame_count)
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+        st.caption("点击图下方的 ▶ 播放按钮观察粒子动态运动。")
     else:
-        frame = st.slider("动画帧位置", 0.0, 1.0, 1.0, 0.01, help="拖动滑块可以观察粒子从初始时刻到末时刻的运动过程。")
+        frame = st.slider("帧位置", 0.0, 1.0, 1.0, 0.01)
         show_arrows = st.checkbox("显示速度/受力方向箭头", value=True)
-        fig = plot_result_dashboard(result, frame_ratio=frame, show_arrows=show_arrows)
-        st.pyplot(fig, use_container_width=True)
-        download_figure(fig, "single_simulation_600dpi.png")
+        fig = plot_static_dashboard(result, frame_ratio=frame, show_arrows=show_arrows)
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
     c = params["c"]
     col1, col2, col3, col4 = st.columns(4)
@@ -1013,8 +849,7 @@ def page_model_compare(params: Dict[str, float]) -> None:
         return
 
     fig = plot_compare(rel, cls)
-    st.pyplot(fig, use_container_width=True)
-    download_figure(fig, "model_compare_600dpi.png")
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
     c = params["c"]
     col1, col2, col3 = st.columns(3)
@@ -1094,8 +929,7 @@ def page_parameter_scan(model: str, params: Dict[str, float]) -> None:
         return
 
     fig = plot_scan(results, scan_name, params["c"])
-    st.pyplot(fig, use_container_width=True)
-    download_figure(fig, "parameter_scan_600dpi.png")
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
     summary = pd.DataFrame({
         scan_name: [r["scan_value"] for r in results],
@@ -1121,8 +955,7 @@ def page_diagnostics(model: str, params: Dict[str, float]) -> None:
         return
 
     fig, table = plot_diagnostics(result)
-    st.pyplot(fig, use_container_width=True)
-    download_figure(fig, "diagnostics_600dpi.png")
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
     st.subheader("诊断指标表")
     st.dataframe(table, use_container_width=True)
     download_dataframe(result_to_dataframe(result), "diagnostics_data.csv")
@@ -1139,8 +972,7 @@ def page_3d(model: str, params: Dict[str, float]) -> None:
         return
 
     fig = plot_3d_trajectory(result)
-    st.pyplot(fig, use_container_width=True)
-    download_figure(fig, "trajectory_3d_600dpi.png")
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
     download_dataframe(result_to_dataframe(result), "trajectory_3d.csv")
 
 
@@ -1158,12 +990,11 @@ def page_contraction() -> None:
     col3.metric("L/L0", "%.3f" % length)
 
     fig = plot_lorentz_contraction(beta)
-    st.pyplot(fig, use_container_width=True)
-    download_figure(fig, "lorentz_contraction_600dpi.png")
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
 
 # ============================================================
-# 7. 主程序
+# 8. 主程序
 # ============================================================
 
 
