@@ -36,6 +36,8 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager
 from matplotlib.collections import LineCollection
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 
 # ============================================================
@@ -88,8 +90,13 @@ def setup_chinese_font() -> None:
 
 
 setup_chinese_font()
-plt.rcParams["figure.dpi"] = 120
-plt.rcParams["savefig.dpi"] = 300
+# 提高 Streamlit 页面中 Matplotlib 图像的清晰度；论文下载图使用 600 dpi。
+plt.rcParams["figure.dpi"] = 160
+plt.rcParams["savefig.dpi"] = 600
+plt.rcParams["font.size"] = 11
+plt.rcParams["axes.titlesize"] = 14
+plt.rcParams["axes.labelsize"] = 12
+plt.rcParams["legend.fontsize"] = 10
 
 
 COL_REL = "#1f77b4"
@@ -470,6 +477,23 @@ def download_dataframe(df: pd.DataFrame, filename: str) -> None:
     )
 
 
+def fig_to_png_bytes(fig: plt.Figure, dpi: int = 600) -> bytes:
+    """把 Matplotlib 图像转换为高清 PNG 字节流，便于论文下载。"""
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def download_figure(fig: plt.Figure, filename: str, label: str = "下载高清 PNG 图像（600 dpi）") -> None:
+    st.download_button(
+        label=label,
+        data=fig_to_png_bytes(fig, dpi=600),
+        file_name=filename,
+        mime="image/png",
+    )
+
+
 def style_axis(ax, xlabel: str, ylabel: str, title: str) -> None:
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
@@ -477,6 +501,149 @@ def style_axis(ax, xlabel: str, ylabel: str, title: str) -> None:
     ax.grid(True, alpha=0.25, linestyle="--")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
+
+
+def plot_dynamic_trajectory_plotly(result: Dict[str, np.ndarray], max_frames: int = 180) -> go.Figure:
+    """生成浏览器中可播放的 Plotly 动态轨迹图。"""
+    t = result["t"]
+    r = result["r"]
+    speed = result["speed"]
+    c = result["params"]["c"]
+
+    n = len(t)
+    frame_indices = np.unique(np.linspace(0, n - 1, min(max_frames, n)).astype(int))
+
+    x_min, x_max = float(np.min(r[:, 0])), float(np.max(r[:, 0]))
+    y_min, y_max = float(np.min(r[:, 1])), float(np.max(r[:, 1]))
+    x_pad = max(0.5, 0.08 * (x_max - x_min + 1e-9))
+    y_pad = max(0.5, 0.08 * (y_max - y_min + 1e-9))
+
+    initial_idx = int(frame_indices[0])
+    fig = go.Figure(
+        data=[
+            go.Scatter(
+                x=r[:initial_idx + 1, 0],
+                y=r[:initial_idx + 1, 1],
+                mode="lines",
+                line=dict(color="#1f77b4", width=3),
+                name="运动轨迹",
+            ),
+            go.Scatter(
+                x=[r[initial_idx, 0]],
+                y=[r[initial_idx, 1]],
+                mode="markers",
+                marker=dict(color="#d62728", size=12),
+                name="粒子当前位置",
+                text=["t=%.3f<br>v/c=%.4f" % (t[initial_idx], speed[initial_idx] / c)],
+                hoverinfo="text",
+            ),
+        ]
+    )
+
+    frames = []
+    slider_steps = []
+    for k, idx in enumerate(frame_indices):
+        frame_name = str(k)
+        frames.append(
+            go.Frame(
+                name=frame_name,
+                data=[
+                    go.Scatter(
+                        x=r[:idx + 1, 0],
+                        y=r[:idx + 1, 1],
+                        mode="lines",
+                        line=dict(color="#1f77b4", width=3),
+                    ),
+                    go.Scatter(
+                        x=[r[idx, 0]],
+                        y=[r[idx, 1]],
+                        mode="markers",
+                        marker=dict(color="#d62728", size=12),
+                        text=["t=%.3f<br>v/c=%.4f" % (t[idx], speed[idx] / c)],
+                        hoverinfo="text",
+                    ),
+                ],
+            )
+        )
+        slider_steps.append(
+            dict(
+                method="animate",
+                args=[[frame_name], dict(mode="immediate", frame=dict(duration=0, redraw=True), transition=dict(duration=0))],
+                label="%.1f" % t[idx],
+            )
+        )
+
+    fig.frames = frames
+    fig.update_layout(
+        title="动态轨迹播放：x-y 平面运动",
+        height=650,
+        font=dict(family="Noto Sans CJK SC, Microsoft YaHei, SimHei, Arial Unicode MS, sans-serif", size=14),
+        xaxis=dict(title="x", range=[x_min - x_pad, x_max + x_pad], zeroline=False),
+        yaxis=dict(title="y", range=[y_min - y_pad, y_max + y_pad], scaleanchor="x", scaleratio=1, zeroline=False),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        updatemenus=[
+            dict(
+                type="buttons",
+                showactive=False,
+                x=0.02,
+                y=-0.12,
+                xanchor="left",
+                yanchor="top",
+                buttons=[
+                    dict(
+                        label="▶ 播放",
+                        method="animate",
+                        args=[None, dict(frame=dict(duration=35, redraw=True), transition=dict(duration=0), fromcurrent=True)],
+                    ),
+                    dict(
+                        label="⏸ 暂停",
+                        method="animate",
+                        args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate", transition=dict(duration=0))],
+                    ),
+                ],
+            )
+        ],
+        sliders=[
+            dict(
+                active=0,
+                currentvalue=dict(prefix="时间 t = "),
+                pad=dict(t=55),
+                steps=slider_steps,
+            )
+        ],
+        margin=dict(l=20, r=20, t=70, b=90),
+    )
+    return fig
+
+
+def plot_interactive_time_curves_plotly(result: Dict[str, np.ndarray]) -> go.Figure:
+    """生成浏览器中高清可缩放的速度、γ、动能交互曲线。"""
+    t = result["t"]
+    c = result["params"]["c"]
+    fig = make_subplots(
+        rows=3,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        subplot_titles=("速度 v/c 随时间变化", "洛仑兹因子 γ 随时间变化", "动能 K 随时间变化"),
+    )
+    fig.add_trace(go.Scatter(x=t, y=result["speed"] / c, mode="lines", name="速度 v/c", line=dict(color="#1f77b4", width=3)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=t, y=np.ones_like(t), mode="lines", name="光速 c", line=dict(color="#222222", width=2, dash="dot")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=t, y=result["gamma"], mode="lines", name="γ", line=dict(color="#9467bd", width=3)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=t, y=result["kinetic"], mode="lines", name="动能 K", line=dict(color="#2ca02c", width=3)), row=3, col=1)
+
+    fig.update_xaxes(title_text="时间 t", row=3, col=1)
+    fig.update_yaxes(title_text="v/c", row=1, col=1)
+    fig.update_yaxes(title_text="γ", row=2, col=1)
+    fig.update_yaxes(title_text="K", row=3, col=1)
+    fig.update_layout(
+        height=820,
+        title="物理量交互曲线：可拖动、缩放、查看数据点",
+        font=dict(family="Noto Sans CJK SC, Microsoft YaHei, SimHei, Arial Unicode MS, sans-serif", size=14),
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=90, b=40),
+    )
+    return fig
 
 
 def plot_result_dashboard(result: Dict[str, np.ndarray], frame_ratio: float = 1.0, show_arrows: bool = True) -> plt.Figure:
@@ -796,10 +963,30 @@ def page_single_simulation(model: str, params: Dict[str, float]) -> None:
         st.error(str(exc))
         return
 
-    frame = st.slider("动画帧位置", 0.0, 1.0, 1.0, 0.01, help="拖动滑块可以观察粒子从初始时刻到末时刻的运动过程。")
-    show_arrows = st.checkbox("显示速度/受力方向箭头", value=True)
-    fig = plot_result_dashboard(result, frame_ratio=frame, show_arrows=show_arrows)
-    st.pyplot(fig, use_container_width=True)
+    display_mode = st.radio(
+        "显示模式",
+        ["交互动画（浏览器播放，推荐）", "高清静态图（适合论文下载）"],
+        horizontal=True,
+    )
+
+    if display_mode == "交互动画（浏览器播放，推荐）":
+        st.info("点击动态图下方的 ▶ 播放按钮即可看到粒子运动过程；右上角工具栏可以放大、平移和保存图片。")
+        fig_anim = plot_dynamic_trajectory_plotly(result)
+        st.plotly_chart(fig_anim, use_container_width=True, config={"displaylogo": False, "scrollZoom": True})
+
+        fig_curves = plot_interactive_time_curves_plotly(result)
+        st.plotly_chart(fig_curves, use_container_width=True, config={"displaylogo": False, "scrollZoom": True})
+
+        with st.expander("生成论文用高清静态图"):
+            fig_static = plot_result_dashboard(result, frame_ratio=1.0, show_arrows=True)
+            st.pyplot(fig_static, use_container_width=True)
+            download_figure(fig_static, "single_simulation_600dpi.png")
+    else:
+        frame = st.slider("动画帧位置", 0.0, 1.0, 1.0, 0.01, help="拖动滑块可以观察粒子从初始时刻到末时刻的运动过程。")
+        show_arrows = st.checkbox("显示速度/受力方向箭头", value=True)
+        fig = plot_result_dashboard(result, frame_ratio=frame, show_arrows=show_arrows)
+        st.pyplot(fig, use_container_width=True)
+        download_figure(fig, "single_simulation_600dpi.png")
 
     c = params["c"]
     col1, col2, col3, col4 = st.columns(4)
@@ -827,6 +1014,7 @@ def page_model_compare(params: Dict[str, float]) -> None:
 
     fig = plot_compare(rel, cls)
     st.pyplot(fig, use_container_width=True)
+    download_figure(fig, "model_compare_600dpi.png")
 
     c = params["c"]
     col1, col2, col3 = st.columns(3)
@@ -907,6 +1095,7 @@ def page_parameter_scan(model: str, params: Dict[str, float]) -> None:
 
     fig = plot_scan(results, scan_name, params["c"])
     st.pyplot(fig, use_container_width=True)
+    download_figure(fig, "parameter_scan_600dpi.png")
 
     summary = pd.DataFrame({
         scan_name: [r["scan_value"] for r in results],
@@ -933,6 +1122,7 @@ def page_diagnostics(model: str, params: Dict[str, float]) -> None:
 
     fig, table = plot_diagnostics(result)
     st.pyplot(fig, use_container_width=True)
+    download_figure(fig, "diagnostics_600dpi.png")
     st.subheader("诊断指标表")
     st.dataframe(table, use_container_width=True)
     download_dataframe(result_to_dataframe(result), "diagnostics_data.csv")
@@ -950,6 +1140,7 @@ def page_3d(model: str, params: Dict[str, float]) -> None:
 
     fig = plot_3d_trajectory(result)
     st.pyplot(fig, use_container_width=True)
+    download_figure(fig, "trajectory_3d_600dpi.png")
     download_dataframe(result_to_dataframe(result), "trajectory_3d.csv")
 
 
@@ -968,6 +1159,7 @@ def page_contraction() -> None:
 
     fig = plot_lorentz_contraction(beta)
     st.pyplot(fig, use_container_width=True)
+    download_figure(fig, "lorentz_contraction_600dpi.png")
 
 
 # ============================================================
