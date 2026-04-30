@@ -67,6 +67,10 @@ PLOTLY_CONFIG = {
     },
 }
 
+# 网页绘图加速参数：计算数据可以多，但传给浏览器显示的数据必须适当抽样。
+MAX_PLOT_POINTS = 2500
+MAX_ANIMATION_FRAMES = 60
+
 
 # ============================================================
 # 2. 相对论动力学基础函数
@@ -461,6 +465,9 @@ def plot_static_dashboard(result: Dict[str, np.ndarray], frame_ratio: float = 1.
     n = len(t)
     idx = max(1, min(n - 1, int(frame_ratio * (n - 1))))
 
+    # 抽样后再传给浏览器，避免 Plotly 图像卡顿。
+    pidx = downsample_indices(idx + 1, MAX_PLOT_POINTS)
+
     fig = make_subplots(
         rows=2,
         cols=2,
@@ -469,7 +476,7 @@ def plot_static_dashboard(result: Dict[str, np.ndarray], frame_ratio: float = 1.
         vertical_spacing=0.15,
     )
 
-    fig.add_trace(go.Scatter(x=r[:idx + 1, 0], y=r[:idx + 1, 1], mode="lines", name="轨迹", line=dict(color=COL_REL, width=3)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=r[pidx, 0], y=r[pidx, 1], mode="lines", name="轨迹", line=dict(color=COL_REL, width=3)), row=1, col=1)
     fig.add_trace(go.Scatter(x=[r[idx, 0]], y=[r[idx, 1]], mode="markers", name="当前位置", marker=dict(color=COL_CLS, size=12)), row=1, col=1)
 
     if show_arrows:
@@ -486,10 +493,10 @@ def plot_static_dashboard(result: Dict[str, np.ndarray], frame_ratio: float = 1.
                                ax=r[idx, 0], ay=r[idx, 1], xref="x", yref="y", axref="x", ayref="y",
                                showarrow=True, arrowhead=3, arrowwidth=3, arrowcolor=COL_CLS, text="F")
 
-    fig.add_trace(go.Scatter(x=t[:idx + 1], y=speed[:idx + 1] / c, mode="lines", name="速度 v/c", line=dict(color=COL_REL, width=3)), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t[pidx], y=speed[pidx] / c, mode="lines", name="速度 v/c", line=dict(color=COL_REL, width=3)), row=1, col=2)
     fig.add_trace(go.Scatter(x=t, y=np.ones_like(t), mode="lines", name="光速 c", line=dict(color=COL_DARK, width=2, dash="dot")), row=1, col=2)
-    fig.add_trace(go.Scatter(x=t[:idx + 1], y=gamma[:idx + 1], mode="lines", name="γ", line=dict(color=COL_PURPLE, width=3)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=t[:idx + 1], y=kinetic[:idx + 1], mode="lines", name="动能 K", line=dict(color=COL_GREEN, width=3)), row=2, col=2)
+    fig.add_trace(go.Scatter(x=t[pidx], y=gamma[pidx], mode="lines", name="γ", line=dict(color=COL_PURPLE, width=3)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=t[pidx], y=kinetic[pidx], mode="lines", name="动能 K", line=dict(color=COL_GREEN, width=3)), row=2, col=2)
 
     fig.update_xaxes(title_text="x", row=1, col=1)
     fig.update_yaxes(title_text="y", row=1, col=1, scaleanchor="x", scaleratio=1)
@@ -503,8 +510,14 @@ def plot_static_dashboard(result: Dict[str, np.ndarray], frame_ratio: float = 1.
     return common_layout(fig, "%s：粒子运动仿真结果" % result["model"])
 
 
-def plot_animation_dashboard(result: Dict[str, np.ndarray], frame_count: int = 90) -> go.Figure:
-    """单粒子仿真动画图。"""
+def plot_animation_dashboard(result: Dict[str, np.ndarray], frame_count: int = 60) -> go.Figure:
+    """单粒子仿真动画图。
+
+    加速策略：
+    - 完整轨迹和曲线只画一次作为背景；
+    - 动画帧只更新粒子位置和时间指示线，不再每帧传输累计曲线；
+    - 这样网页播放会比累计轨迹动画快很多。
+    """
     t = result["t"]
     r = result["r"]
     speed = result["speed"]
@@ -512,7 +525,9 @@ def plot_animation_dashboard(result: Dict[str, np.ndarray], frame_count: int = 9
     kinetic = result["kinetic"]
     c = result["params"]["c"]
     n = len(t)
-    frame_indices = np.linspace(1, n - 1, min(frame_count, n - 1)).astype(int)
+    frame_count = min(frame_count, MAX_ANIMATION_FRAMES, n - 1)
+    frame_indices = np.linspace(1, n - 1, frame_count).astype(int)
+    didx = downsample_indices(n, MAX_PLOT_POINTS)
 
     fig = make_subplots(
         rows=2,
@@ -522,29 +537,33 @@ def plot_animation_dashboard(result: Dict[str, np.ndarray], frame_count: int = 9
         vertical_spacing=0.15,
     )
 
-    # 静态全轨迹背景
-    fig.add_trace(go.Scatter(x=r[:, 0], y=r[:, 1], mode="lines", name="完整轨迹", line=dict(color="#c9d6e8", width=2)), row=1, col=1)
-    # 动态轨迹、当前位置、速度、gamma、动能
+    # 背景轨迹和背景曲线：抽样显示，提升网页性能。
+    fig.add_trace(go.Scatter(x=r[didx, 0], y=r[didx, 1], mode="lines", name="完整轨迹", line=dict(color="#c9d6e8", width=2)), row=1, col=1)
     start = frame_indices[0]
-    fig.add_trace(go.Scatter(x=r[:start + 1, 0], y=r[:start + 1, 1], mode="lines", name="已运动轨迹", line=dict(color=COL_REL, width=4)), row=1, col=1)
     fig.add_trace(go.Scatter(x=[r[start, 0]], y=[r[start, 1]], mode="markers", name="粒子", marker=dict(color=COL_CLS, size=13)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=t[:start + 1], y=speed[:start + 1] / c, mode="lines", name="速度 v/c", line=dict(color=COL_REL, width=3)), row=1, col=2)
-    fig.add_trace(go.Scatter(x=t, y=np.ones_like(t), mode="lines", name="光速 c", line=dict(color=COL_DARK, width=2, dash="dot")), row=1, col=2)
-    fig.add_trace(go.Scatter(x=t[:start + 1], y=gamma[:start + 1], mode="lines", name="γ", line=dict(color=COL_PURPLE, width=3)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=t[:start + 1], y=kinetic[:start + 1], mode="lines", name="动能 K", line=dict(color=COL_GREEN, width=3)), row=2, col=2)
+    fig.add_trace(go.Scatter(x=t[didx], y=speed[didx] / c, mode="lines", name="速度 v/c", line=dict(color=COL_REL, width=3)), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t[didx], y=np.ones_like(t[didx]), mode="lines", name="光速 c", line=dict(color=COL_DARK, width=2, dash="dot")), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t[didx], y=gamma[didx], mode="lines", name="γ", line=dict(color=COL_PURPLE, width=3)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=t[didx], y=kinetic[didx], mode="lines", name="动能 K", line=dict(color=COL_GREEN, width=3)), row=2, col=2)
+    # 三条动态时间指示线：比重画曲线更轻量。
+    fig.add_trace(go.Scatter(x=[t[start], t[start]], y=[0, max(1.05, np.max(speed / c) * 1.10)], mode="lines", name="当前时刻", line=dict(color=COL_ORANGE, width=2, dash="dash")), row=1, col=2)
+    fig.add_trace(go.Scatter(x=[t[start], t[start]], y=[0, max(1.2, np.max(gamma) * 1.10)], mode="lines", showlegend=False, line=dict(color=COL_ORANGE, width=2, dash="dash")), row=2, col=1)
+    fig.add_trace(go.Scatter(x=[t[start], t[start]], y=[0, max(0.1, np.max(kinetic) * 1.10)], mode="lines", showlegend=False, line=dict(color=COL_ORANGE, width=2, dash="dash")), row=2, col=2)
 
     frames = []
+    y_speed_max = max(1.05, np.max(speed / c) * 1.10)
+    y_gamma_max = max(1.2, np.max(gamma) * 1.10)
+    y_energy_max = max(0.1, np.max(kinetic) * 1.10)
     for k in frame_indices:
         frames.append(
             go.Frame(
                 data=[
-                    go.Scatter(x=r[:k + 1, 0], y=r[:k + 1, 1]),
                     go.Scatter(x=[r[k, 0]], y=[r[k, 1]]),
-                    go.Scatter(x=t[:k + 1], y=speed[:k + 1] / c),
-                    go.Scatter(x=t[:k + 1], y=gamma[:k + 1]),
-                    go.Scatter(x=t[:k + 1], y=kinetic[:k + 1]),
+                    go.Scatter(x=[t[k], t[k]], y=[0, y_speed_max]),
+                    go.Scatter(x=[t[k], t[k]], y=[0, y_gamma_max]),
+                    go.Scatter(x=[t[k], t[k]], y=[0, y_energy_max]),
                 ],
-                traces=[1, 2, 3, 5, 6],
+                traces=[1, 6, 7, 8],
                 name=str(k),
             )
         )
@@ -814,7 +833,7 @@ def page_single_simulation(model: str, params: Dict[str, float]) -> None:
 
     display_mode = st.radio("显示方式", ["动态播放", "静态交互图"], horizontal=True)
     if display_mode == "动态播放":
-        frame_count = st.slider("动画帧数", 30, 180, 90, 10)
+        frame_count = st.slider("动画帧数", 20, 60, 40, 10, help="帧数越少，网页播放越流畅。论文展示建议 40 帧左右。")
         fig = plot_animation_dashboard(result, frame_count=frame_count)
         st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
         st.caption("点击图下方的 ▶ 播放按钮观察粒子动态运动。")
